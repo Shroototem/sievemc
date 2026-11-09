@@ -9,7 +9,7 @@ import {SideBadge, SideDot, sideColorVar} from "../components/SideBadge.tsx";
 import {WizardStepper} from "../components/WizardStepper.tsx";
 import {Dropdown, type DropdownOption} from "../components/Dropdown.tsx";
 
-type Filter = "all" | "client" | "server" | "both" | "unsure";
+type Filter = "all" | "client" | "server" | "both" | "unused" | "unsure";
 type Sort = "side" | "name";
 
 /** Best-effort friendly name from a jar filename ("sodium-fabric-0.6.13.jar" → "Sodium Fabric"). */
@@ -30,13 +30,15 @@ const OVERRIDE_OPTIONS: DropdownOption<"auto" | Side>[] = [
     {value: "auto", label: "Auto"},
     {value: "client-only", label: "Client"},
     {value: "server-only", label: "Server"},
-    {value: "client-and-server", label: "Both"}
+    {value: "client-and-server", label: "Both"},
+    {value: "unused", label: "Drop"}
 ];
 
 const RAIL: {key: Filter; label: string; side: Side | null}[] = [
     {key: "client", label: "Client only", side: "client-only"},
     {key: "server", label: "Server only", side: "server-only"},
     {key: "both", label: "Both sides", side: "client-and-server"},
+    {key: "unused", label: "Unused (dropped)", side: "unused"},
     {key: "unsure", label: "Unsure", side: null}
 ];
 
@@ -61,13 +63,14 @@ export default function ReviewPage()
 
     const counts = useMemo(() =>
     {
-        const c = {all: state.mods.length, client: 0, server: 0, both: 0, unsure: 0};
+        const c = {all: state.mods.length, client: 0, server: 0, both: 0, unused: 0, unsure: 0};
         for (const mod of state.mods)
         {
             const side = effectiveSide(mod);
             if (side === "client-only") c.client++;
             else if (side === "server-only") c.server++;
             else if (side === "client-and-server") c.both++;
+            else if (side === "unused") c.unused++;
             else c.unsure++;
         }
         return c;
@@ -88,18 +91,20 @@ export default function ReviewPage()
                     return side === "server-only";
                 case "both":
                     return side === "client-and-server";
+                case "unused":
+                    return side === "unused";
                 case "unsure":
                     return side === null;
             }
         };
         const q = search.trim().toLowerCase();
         const filtered = state.mods.filter(m => matchesFilter(m) && (q === "" || m.filename.toLowerCase().includes(q)));
-        const sideRank: Record<string, number> = {"client-only": 0, "server-only": 1, "client-and-server": 2};
+        const sideRank: Record<string, number> = {"client-only": 0, "server-only": 1, "client-and-server": 2, "unused": 3};
         return filtered.sort((a, b) =>
         {
             if (sort === "name") return a.filename.localeCompare(b.filename);
-            const ra = a.side ? sideRank[a.side] : 3;
-            const rb = b.side ? sideRank[b.side] : 3;
+            const ra = a.side ? sideRank[a.side] : 4;
+            const rb = b.side ? sideRank[b.side] : 4;
             return ra - rb || a.filename.localeCompare(b.filename);
         });
     }, [state.mods, effectiveSide, filter, search, sort]);

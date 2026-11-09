@@ -4,7 +4,8 @@ import {listen, type UnlistenFn} from "@tauri-apps/api/event";
 // --- Types mirroring the Rust core (`crates/lib`) serde output ---------------
 
 /** Serialized `sievemc::Side` (kebab-case). */
-export type Side = "client-only" | "server-only" | "client-and-server";
+/** `unused` = a library nothing in the folder needs; dropped from both exports. */
+export type Side = "client-only" | "server-only" | "client-and-server" | "unused";
 
 /** Which side(s) an export targets. `sievemc::ExportSide`. */
 export type ExportSide = "client" | "server" | "both";
@@ -23,6 +24,23 @@ export type ModDetection = {
     mod_id: string | null;
     /** Embedded mod icon as a base64 `data:` URI, or null when none was found. */
     icon: string | null;
+    /** Side suggested by the manifest alone, before dependency resolution. */
+    manifest_side?: Side | null;
+    /** True when the side was taken from the mods that depend on this one. */
+    library?: boolean;
+    /** Which mods need this one, on which side, and how that was determined. */
+    required_by?: Requirement[];
+    /** Missing dependencies or side conflicts found during resolution. */
+    warnings?: string[];
+};
+
+/** `sievemc::Requirement`: `by` needs this mod on `side`. */
+export type Requirement = {
+    by: string;
+    by_file: string;
+    side: Side;
+    kind: "depends" | "recommends" | "bytecode";
+    detail: string | null;
 };
 
 /** Live per-jar update streamed on `sieve://scan-progress`. */
@@ -97,7 +115,7 @@ export function isServerSide(side: Side | null): boolean
 }
 
 /** Short uppercase badge label for a side. */
-export function sideLabel(side: Side | null): "CLIENT" | "SERVER" | "BOTH" | "UNSURE"
+export function sideLabel(side: Side | null): "CLIENT" | "SERVER" | "BOTH" | "UNUSED" | "UNSURE"
 {
     switch (side)
     {
@@ -107,6 +125,8 @@ export function sideLabel(side: Side | null): "CLIENT" | "SERVER" | "BOTH" | "UN
             return "SERVER";
         case "client-and-server":
             return "BOTH";
+        case "unused":
+            return "UNUSED";
         default:
             return "UNSURE";
     }

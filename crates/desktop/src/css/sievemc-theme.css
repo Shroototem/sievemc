@@ -35,6 +35,7 @@
     --color-side-server: var(--side-server);
     --color-side-both: var(--side-both);
     --color-side-unsure: var(--side-unsure);
+    --color-side-unused: var(--side-unused);
 
     /* De-emphasized text ramp (see --fg-* below) */
     --color-fg-muted: var(--fg-muted);
@@ -56,6 +57,7 @@
     --side-server: #43e05c;    /* green — server-only */
     --side-both: #a9b3ac;      /* neutral — both sides */
     --side-unsure: #e0b843;    /* amber — undetected, needs review */
+    --side-unused: #e0706a;    /* muted red — not needed on either side, dropped */
 
     --background: #0b0d0c; /* window background */
     --foreground: #e9efe9; /* primary text */
@@ -102,6 +104,7 @@
     --side-server: #14762c;
     --side-both: #55605a;
     --side-unsure: #8a6408; /* deep amber */
+    --side-unused: #a33a34; /* deep red */
 
     --background: #e4e7e2; /* darker than surfaces so cards read as raised */
     --foreground: #141815;

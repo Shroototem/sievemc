@@ -31,15 +31,16 @@ export default function DonePage()
 
     const stats = useMemo(() =>
     {
-        let clientOnly = 0, serverOnly = 0, both = 0;
+        let clientOnly = 0, serverOnly = 0, both = 0, unused = 0;
         for (const mod of mods)
         {
             const side = overrides[overrideKey(mod)] ?? mod.side;
             if (side === "client-only") clientOnly++;
             else if (side === "server-only") serverOnly++;
             else if (side === "client-and-server") both++;
+            else if (side === "unused") unused++;
         }
-        return {clientOnly, serverOnly, both, decided: Object.keys(overrides).length};
+        return {clientOnly, serverOnly, both, unused, decided: Object.keys(overrides).length};
     }, [mods, overrides]);
 
     if (!receipt) return null;
@@ -99,6 +100,7 @@ export default function DonePage()
                     <StatLine side={"client-only"} count={stats.clientOnly} label={"client-only"} note={"— kept out of the server"}/>
                     <StatLine side={"server-only"} count={stats.serverOnly} label={"server-only"} note={"— kept out of the pack"}/>
                     <StatLine side={"client-and-server"} count={stats.both} label={"both sides"}/>
+                    {stats.unused > 0 && <StatLine side={"unused"} count={stats.unused} label={"unused"} note={"— not needed, dropped from both"}/>}
                     {stats.decided > 0 && <StatLine side={null} count={stats.decided} label={"decided by you"}/>}
                 </div>
                 <div className={"flex gap-3 mt-7"}>

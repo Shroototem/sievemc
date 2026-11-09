@@ -51,6 +51,7 @@ semver = "1"
 
 # Core sieving library (crate name `sievemc`), used by the scan/export commands.
 sievemc_lib = { path = "../../lib" }
+rayon = "1.12.0"
 
 [target.'cfg(windows)'.dependencies]
 # Reads HKCU\Software\SieveMC\InstallPath to tell an installed build from a portable one.

@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use tracing::{debug, info, trace, warn};
 
+mod classfile;
+pub mod deps;
+pub use deps::{Requirement, RequirementKind, apply_dependency_sides, resolve_sides};
+
 #[derive(thiserror::Error, Debug)]
 pub enum SieveError {
     #[error(transparent)]
@@ -34,6 +38,9 @@ pub enum Side {
     ClientOnly,
     ServerOnly,
     ClientAndServer,
+    /// Not needed on either side: a library nothing in the folder requires.
+    /// Only produced by dependency resolution ([`deps`]), never by a manifest.
+    Unused,
 }
 
 const DEFAULT_MULTITHREAD_THRESHOLD: u8 = 10;
@@ -66,8 +73,7 @@ pub fn get_many_mod_file_sides(
     let use_multithread = files.len() > threshold;
     trace!(
         "Multithread threshold: {}, use_multithread: {}",
-        threshold,
-        use_multithread
+        threshold, use_multithread
     );
 
     let sides = if use_multithread {
@@ -104,6 +110,17 @@ pub fn get_many_mod_file_sides(
         sides
     };
 
+    // Dependency-aware pass (see [`deps`]); keep the manifest side if unresolved.
+    let input: Vec<(PathBuf, Option<Side>)> = sides
+        .into_iter()
+        .map(|(path, side)| (path, Some(side)))
+        .collect();
+    let sides: HashMap<PathBuf, Side> = input
+        .iter()
+        .zip(resolve_sides(&input))
+        .filter_map(|((path, manifest), r)| r.side.or(manifest.clone()).map(|s| (path.clone(), s)))
+        .collect();
+
     info!("Successfully processed {} mod files", sides.len());
     Ok(sides)
 }
@@ -137,10 +154,7 @@ pub fn get_mod_file_side(file: impl AsRef<Path>) -> Result<Side, SieveError> {
         info!("Forge mod {}: {:?}", file.display(), side);
         Ok(side)
     } else {
-        warn!(
-            "No recognized mod manifest found in {}",
-            file.display()
-        );
+        warn!("No recognized mod manifest found in {}", file.display());
         Err(SieveError::FileMissingEntry(
             file.to_path_buf(),
             "fabric.mod.json, neoforge.mods.toml, or mods.toml".to_string(),
@@ -173,6 +187,18 @@ pub struct ModDetection {
     /// The mod's embedded icon as a `data:` URI (base64), if one was found and
     /// could be read from the jar. Directly usable as an `<img src>`.
     pub icon: Option<String>,
+    /// The side the manifest alone suggested, before dependency resolution.
+    #[serde(default)]
+    pub manifest_side: Option<Side>,
+    /// Whether the jar is treated as a library (side comes from its dependents).
+    #[serde(default)]
+    pub library: bool,
+    /// Which other mods need this one, on which side, and why.
+    #[serde(default)]
+    pub required_by: Vec<Requirement>,
+    /// Problems found while resolving (missing deps, side conflicts).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Everything [`inspect_mod`] pulls out of a single jar's manifest.
@@ -189,6 +215,7 @@ fn side_label(side: &Side) -> &'static str {
         Side::ClientOnly => "client",
         Side::ServerOnly => "server",
         Side::ClientAndServer => "both",
+        Side::Unused => "unused",
     }
 }
 
@@ -219,11 +246,15 @@ pub fn detect_mod(path: impl AsRef<Path>) -> ModDetection {
     ModDetection {
         path: path.to_path_buf(),
         filename,
+        manifest_side: side.clone(),
         side,
         evidence,
         loader,
         mod_id,
         icon,
+        library: false,
+        required_by: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 
@@ -294,15 +325,16 @@ fn toml_detection(
     loader: &str,
     manifest: &str,
 ) -> Inspection {
-    let base = |side: Option<Side>, evidence: String, mod_id: Option<String>, icon: Option<String>| {
-        Inspection {
-            side,
-            evidence,
-            loader: Some(loader.to_string()),
-            mod_id,
-            icon,
-        }
-    };
+    let base =
+        |side: Option<Side>, evidence: String, mod_id: Option<String>, icon: Option<String>| {
+            Inspection {
+                side,
+                evidence,
+                loader: Some(loader.to_string()),
+                mod_id,
+                icon,
+            }
+        };
 
     let text = match from_utf8(buf) {
         Ok(t) => t,
@@ -384,6 +416,8 @@ fn icon_mime(path: &str) -> &'static str {
 /// Detect the side of every `*.jar` in `directory` (non-recursive), returning a
 /// stable, alphabetically-sorted list. Unlike [`get_many_mod_file_sides`], jars
 /// that can't be classified are retained with `side: None`.
+///
+/// Sides are dependency-resolved: see [`deps`].
 pub fn detect_mods(directory: impl AsRef<Path>) -> Result<Vec<ModDetection>, SieveError> {
     let directory = directory.as_ref();
     info!("Detecting mods in directory: {}", directory.display());
@@ -400,7 +434,9 @@ pub fn detect_mods(directory: impl AsRef<Path>) -> Result<Vec<ModDetection>, Sie
         .collect();
     files.sort();
 
-    Ok(files.iter().map(detect_mod).collect())
+    let mut detections: Vec<ModDetection> = files.par_iter().map(detect_mod).collect();
+    apply_dependency_sides(&mut detections);
+    Ok(detections)
 }
 
 /// Which side(s) an export cares about. `Both` produces two output sets.
@@ -464,8 +500,8 @@ fn write_archive(items: &[&ExportItem], zip_path: &Path) -> Result<(), SieveErro
         std::fs::create_dir_all(parent)?;
     }
     let mut writer = zip::ZipWriter::new(File::create(zip_path)?);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for item in items {
         writer.start_file(filename_of(&item.path), options)?;
         let mut reader = File::open(&item.path)?;
@@ -538,8 +574,16 @@ pub fn export_mods(
     }
 
     let receipt = ExportReceipt {
-        client: if want_client { client_names } else { Vec::new() },
-        server: if want_server { server_names } else { Vec::new() },
+        client: if want_client {
+            client_names
+        } else {
+            Vec::new()
+        },
+        server: if want_server {
+            server_names
+        } else {
+            Vec::new()
+        },
         outputs,
         duration_ms: start.elapsed().as_millis(),
     };
@@ -558,7 +602,10 @@ fn read_archive_entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Option
     entry.read_to_end(&mut buf).ok().map(|_| buf)
 }
 
-fn get_loader_toml_side(contents: toml::Value, loader: &str) -> Result<Side, SieveError> {
+pub(crate) fn get_loader_toml_side(
+    contents: toml::Value,
+    loader: &str,
+) -> Result<Side, SieveError> {
     let mod_id = contents
         .get("mods")
         .and_then(|v| v.as_array())

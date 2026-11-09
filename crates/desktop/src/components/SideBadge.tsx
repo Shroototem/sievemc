@@ -12,6 +12,8 @@ export function sideColorVar(side: Side | null): string
             return "var(--color-side-server)";
         case "client-and-server":
             return "var(--color-side-both)";
+        case "unused":
+            return "var(--color-side-unused)";
         default:
             return "var(--color-side-unsure)";
     }
@@ -28,7 +30,7 @@ export function SideDot({side, className = ""}: {side: Side | null; className?: 
     );
 }
 
-/** The CLIENT / SERVER / BOTH / UNSURE pill from the mockups. */
+/** The CLIENT / SERVER / BOTH / UNUSED / UNSURE pill from the mockups. */
 export function SideBadge({side}: {side: Side | null})
 {
     const color = sideColorVar(side);

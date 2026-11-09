@@ -1,12 +1,15 @@
 //! Tauri commands bridging the desktop UI to the `sievemc` core library.
 //!
-//! - [`scan`] walks a mods directory, classifies each jar via
-//!   [`sievemc::detect_mod`], and streams `sieve://scan-progress` events so the
-//!   UI can render a live tally + log while the scan runs.
+//! - [`scan`] walks a mods directory, reads each jar's manifest in parallel via
+//!   [`sievemc::detect_mod`] (streaming `sieve://scan-progress` events so the
+//!   UI can render a live tally + log), then resolves sides across the whole
+//!   folder with [`sievemc::apply_dependency_sides`].
 //! - [`export`] copies/zips the reviewed set through [`sievemc::export_mods`].
 //! - [`open_path`] reveals an output folder in the OS file manager.
 
+use rayon::prelude::*;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_opener::OpenerExt;
 use tracing::{info, warn};
@@ -53,40 +56,60 @@ pub async fn scan(app: AppHandle, directory: String) -> Result<Vec<ModDetection>
     files.sort();
 
     let total = files.len();
-    let mut results: Vec<ModDetection> = Vec::with_capacity(total);
-    let (mut client, mut server, mut both, mut unsure) = (0usize, 0usize, 0usize, 0usize);
+    // First pass: read each jar's manifest, in parallel (one jar per core).
+    // Progress events fire as jars finish, so `index` counts completed jars.
+    let done = AtomicUsize::new(0);
+    let tally: [AtomicUsize; 4] = Default::default(); // client, server, both, unsure
+    let mut results: Vec<ModDetection> = files
+        .par_iter()
+        .map(|file| {
+            let detection = sievemc::detect_mod(file);
+            let bucket = match detection.side {
+                Some(Side::ClientOnly) => 0,
+                Some(Side::ServerOnly) => 1,
+                Some(Side::ClientAndServer) => 2,
+                // Only dependency resolution (below) produces Unused.
+                Some(Side::Unused) | None => 3,
+            };
+            tally[bucket].fetch_add(1, Ordering::Relaxed);
+            let index = done.fetch_add(1, Ordering::Relaxed) + 1;
+            let count = |i: usize| tally[i].load(Ordering::Relaxed);
+            if let Err(e) = app.emit(
+                "sieve://scan-progress",
+                ScanProgress {
+                    index,
+                    total,
+                    filename: detection.filename.clone(),
+                    side: detection.side.clone(),
+                    evidence: detection.evidence.clone(),
+                    client: count(0),
+                    server: count(1),
+                    both: count(2),
+                    unsure: count(3),
+                },
+            ) {
+                warn!("Failed to emit scan-progress: {e}");
+            }
+            detection
+        })
+        .collect();
 
-    for (i, file) in files.iter().enumerate() {
-        let detection = sievemc::detect_mod(file);
-        match detection.side {
+    // Second pass: propagate sides across the dependency graph (a library
+    // required by server-side code must ship on the server too).
+    sievemc::apply_dependency_sides(&mut results);
+    let (mut client, mut server, mut both, mut unused, mut unsure) = (0usize, 0, 0, 0, 0);
+    for d in &results {
+        match d.side {
             Some(Side::ClientOnly) => client += 1,
             Some(Side::ServerOnly) => server += 1,
             Some(Side::ClientAndServer) => both += 1,
+            Some(Side::Unused) => unused += 1,
             None => unsure += 1,
         }
-
-        if let Err(e) = app.emit(
-            "sieve://scan-progress",
-            ScanProgress {
-                index: i + 1,
-                total,
-                filename: detection.filename.clone(),
-                side: detection.side.clone(),
-                evidence: detection.evidence.clone(),
-                client,
-                server,
-                both,
-                unsure,
-            },
-        ) {
-            warn!("Failed to emit scan-progress: {e}");
-        }
-
-        results.push(detection);
     }
 
     info!(
-        "Scan complete: {total} jars ({client} client, {server} server, {both} both, {unsure} unsure)"
+        "Scan complete: {total} jars ({client} client, {server} server, {both} both, {unused} unused, {unsure} unsure)"
     );
     Ok(results)
 }
