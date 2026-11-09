@@ -131,9 +131,11 @@ pub fn get_mod_file_side(file: impl AsRef<Path>) -> Result<Side, SieveError> {
 
     let mut archive = zip::ZipArchive::new(File::open(file)?)?;
 
-    if let Ok(entry) = archive.by_name("fabric.mod.json") {
+    if let Ok(mut entry) = archive.by_name("fabric.mod.json") {
         trace!("Found fabric.mod.json in {}", file.display());
-        let contents: serde_json::Value = serde_json::from_reader(entry)?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        let contents = parse_json_lenient(&buf)?;
         let side = get_json_schema_side(contents)?;
         info!("Fabric mod {}: {:?}", file.display(), side);
         Ok(side)
@@ -279,7 +281,7 @@ fn inspect_mod(path: &Path) -> Inspection {
     // Fabric — read the manifest bytes first so the archive is free to be
     // borrowed again below for the icon lookup.
     if let Some(buf) = read_archive_entry(&mut archive, "fabric.mod.json") {
-        let value: Option<serde_json::Value> = serde_json::from_slice(&buf).ok();
+        let value: Option<serde_json::Value> = parse_json_lenient(&buf).ok();
         let mod_id = value
             .as_ref()
             .and_then(|v| v.get("id"))
@@ -596,6 +598,43 @@ pub fn export_mods(
     Ok(receipt)
 }
 
+/// Parse JSON the way Fabric Loader does: also accept raw control characters
+/// (line breaks, tabs) inside strings and a UTF-8 BOM. Real-world
+/// `fabric.mod.json` files often have multi-line descriptions that strict
+/// JSON rejects, though the game loads them fine.
+pub(crate) fn parse_json_lenient(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    let strict = serde_json::from_slice(bytes);
+    if strict.is_ok() {
+        return strict;
+    }
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let mut fixed = Vec::with_capacity(bytes.len() + 16);
+    let (mut in_string, mut escaped) = (false, false);
+    for &b in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            } else if b < 0x20 {
+                match b {
+                    b'\n' => fixed.extend_from_slice(b"\\n"),
+                    b'\r' => fixed.extend_from_slice(b"\\r"),
+                    b'\t' => fixed.extend_from_slice(b"\\t"),
+                    _ => fixed.extend_from_slice(format!("\\u{b:04x}").as_bytes()),
+                }
+                continue;
+            }
+        } else if b == b'"' {
+            in_string = true;
+        }
+        fixed.push(b);
+    }
+    serde_json::from_slice(&fixed).or(strict)
+}
+
 fn read_archive_entry(archive: &mut zip::ZipArchive<File>, name: &str) -> Option<Vec<u8>> {
     let mut entry = archive.by_name(name).ok()?;
     let mut buf = Vec::new();
@@ -719,6 +758,21 @@ mod detect_test {
         assert_eq!(d.filename, "fabric_clientonly.jar");
         // Manifest id is captured for remembering per-mod overrides across scans.
         assert_eq!(d.mod_id.as_deref(), Some("clientside_mod_example"));
+    }
+
+    #[test]
+    fn lenient_json_accepts_raw_line_breaks_and_bom() {
+        // Multi-line descriptions with literal line breaks are common in real
+        // fabric.mod.json files; Fabric Loader accepts them.
+        let raw = b"\xef\xbb\xbf{\"id\": \"x\", \"description\": \"line one\nline\ttwo\", \"environment\": \"*\"}";
+        let v = parse_json_lenient(raw).unwrap();
+        assert_eq!(v["description"], "line one\nline\ttwo");
+        assert_eq!(v["environment"], "*");
+        // Escaped quotes don't confuse the string tracking.
+        let v = parse_json_lenient(b"{\"a\": \"say \\\"hi\\\"\nnow\"}").unwrap();
+        assert_eq!(v["a"], "say \"hi\"\nnow");
+        // Genuinely broken JSON still fails.
+        assert!(parse_json_lenient(b"{\"a\": }").is_err());
     }
 
     #[test]

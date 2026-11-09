@@ -62,6 +62,9 @@ fabric orphanlib orphan '{"schemaVersion":1,"id":"orphanlib","version":"1","envi
 # Used by clientmod without being declared anywhere.
 fabric hiddenlib hidden '{"schemaVersion":1,"id":"hiddenlib","version":"1","environment":"*","custom":{"modmenu":{"badges":["library"]}}}'
 fabric clientmod cm '{"schemaVersion":1,"id":"clientmod","version":"1","environment":"client","entrypoints":{"client":["cm.ClientMain::init"]}}'
+# Its description has a raw line break, like many real fabric.mod.json files.
+fabric multiline multiline '{"schemaVersion":1,"id":"multiline","version":"1","description":"First line
+second line","environment":"*","entrypoints":{"main":["multiline.Init::init"]}}'
 
 # ---- NeoForge ---------------------------------------------------------------
 out="$root/examples/deps-neoforge"

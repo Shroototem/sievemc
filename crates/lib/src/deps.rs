@@ -305,7 +305,7 @@ impl Jar {
         let use_toml = toml.is_some() && (!fabric || preferred != Some(Loader::Fabric));
         if fabric && !use_toml {
             let buf = read_entry(&mut root, "fabric.mod.json")?;
-            let manifest: serde_json::Value = serde_json::from_slice(&buf).ok()?;
+            let manifest = crate::parse_json_lenient(&buf).ok()?;
             jar.fabric = true;
             jar.load_fabric(0, &manifest, false, 0);
         } else if let Some((name, loader)) = toml {
@@ -423,8 +423,8 @@ impl Jar {
                 ),
                 _ => continue,
             };
-            let Some(json) = read_entry(&mut zip, config)
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            let Some(json) =
+                read_entry(&mut zip, config).and_then(|b| crate::parse_json_lenient(&b).ok())
             else {
                 continue;
             };
@@ -487,7 +487,7 @@ impl Jar {
                 let mut zip = zip.clone();
                 let mut inner = read_entry(&mut zip, file).and_then(open_zip)?;
                 let manifest = read_entry(&mut inner, "fabric.mod.json")
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())?;
+                    .and_then(|b| crate::parse_json_lenient(&b).ok())?;
                 Some((inner, manifest))
             })
             .collect();
@@ -563,8 +563,8 @@ impl Jar {
         }
         let mut mixin_roots = 0usize;
         for config in configs {
-            let Some(json) = read_entry(&mut zip, &config)
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            let Some(json) =
+                read_entry(&mut zip, &config).and_then(|b| crate::parse_json_lenient(&b).ok())
             else {
                 continue;
             };
@@ -595,7 +595,7 @@ impl Jar {
         // Jar-in-jar: the list lives in META-INF/jarjar/metadata.json (paths
         // aren't always under META-INF/jarjar/).
         let mut nested_files: Vec<String> = read_entry(&mut zip, "META-INF/jarjar/metadata.json")
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|b| crate::parse_json_lenient(&b).ok())
             .and_then(|v| v.get("jars").and_then(|j| j.as_array()).cloned())
             .into_iter()
             .flatten()
@@ -1733,6 +1733,17 @@ mod tests {
     fn unused_library_wrapper_is_dropped() {
         let m = resolve_files("../../examples/deps-neoforge");
         assert_eq!(m["neo_unusedlib"].side, Some(Side::Unused));
+    }
+
+    #[test]
+    fn manifest_with_raw_line_break_is_read() {
+        // Strict JSON rejects the raw line break in its description; Fabric
+        // (and now sievemc) accept it.
+        let m = resolve_dir("../../examples/deps");
+        let mod_ = &m["multiline"];
+        assert_eq!(mod_.manifest_side, Some(Side::ClientAndServer));
+        assert_eq!(mod_.side, Some(Side::ClientAndServer));
+        assert!(mod_.evidence.contains("registers game content"));
     }
 
     #[test]
